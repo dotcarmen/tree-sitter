@@ -8,52 +8,52 @@ pub fn build(b: *std.Build) !void {
     const shared = b.option(bool, "build-shared", "Build a shared library") orelse false;
     const amalgamated = b.option(bool, "amalgamated", "Build using an amalgamated source") orelse false;
 
-    const lib: *std.Build.Step.Compile = b.addLibrary(.{
-        .name = "tree-sitter",
-        .linkage = if (shared) .dynamic else .static,
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .pic = if (shared) true else null,
-        }),
+    const mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .pic = if (shared) true else null,
     });
 
     if (amalgamated) {
-        lib.addCSourceFile(.{
+        mod.addCSourceFile(.{
             .file = b.path("lib/src/lib.c"),
             .flags = &.{"-std=c11"},
         });
     } else {
         const files = try findSourceFiles(b);
         defer b.allocator.free(files);
-        lib.addCSourceFiles(.{
+        mod.addCSourceFiles(.{
             .root = b.path("lib/src"),
             .files = files,
             .flags = &.{"-std=c11"},
         });
     }
 
-    lib.addIncludePath(b.path("lib/include"));
-    lib.addIncludePath(b.path("lib/src"));
-    lib.addIncludePath(b.path("lib/src/wasm"));
+    mod.addIncludePath(b.path("lib/include"));
+    mod.addIncludePath(b.path("lib/src"));
+    mod.addIncludePath(b.path("lib/src/wasm"));
 
-    lib.root_module.addCMacro("_POSIX_C_SOURCE", "200112L");
-    lib.root_module.addCMacro("_DEFAULT_SOURCE", "");
-    lib.root_module.addCMacro("_BSD_SOURCE", "");
-    lib.root_module.addCMacro("_DARWIN_C_SOURCE", "");
+    mod.addCMacro("_POSIX_C_SOURCE", "200112L");
+    mod.addCMacro("_DEFAULT_SOURCE", "");
+    mod.addCMacro("_BSD_SOURCE", "");
+    mod.addCMacro("_DARWIN_C_SOURCE", "");
 
     if (wasm) {
         if (b.lazyDependency(wasmtimeDep(target.result), .{})) |wasmtime| {
-            lib.root_module.addCMacro("TREE_SITTER_FEATURE_WASM", "");
-            lib.addSystemIncludePath(wasmtime.path("include"));
-            lib.addLibraryPath(wasmtime.path("lib"));
-            if (shared) lib.linkSystemLibrary("wasmtime");
+            mod.addCMacro("TREE_SITTER_FEATURE_WASM", "");
+            mod.addSystemIncludePath(wasmtime.path("include"));
+            mod.addLibraryPath(wasmtime.path("lib"));
+            if (shared) mod.linkSystemLibrary("wasmtime", .{ .needed = true });
         }
     }
 
+    const lib = b.addLibrary(.{
+        .name = "tree-sitter",
+        .linkage = if (shared) .dynamic else .static,
+        .root_module = mod,
+    });
     lib.installHeadersDirectory(b.path("lib/include"), ".", .{});
-
     b.installArtifact(lib);
 }
 
@@ -125,11 +125,11 @@ pub fn wasmtimeDep(target: std.Target) []const u8 {
 fn findSourceFiles(b: *std.Build) ![]const []const u8 {
     var sources: std.ArrayListUnmanaged([]const u8) = .empty;
 
-    var dir = try b.build_root.handle.openDir("lib/src", .{ .iterate = true });
+    var dir = try b.build_root.handle.openDir(b.graph.io, "lib/src", .{ .iterate = true });
     var iter = dir.iterate();
-    defer dir.close();
+    defer dir.close(b.graph.io);
 
-    while (try iter.next()) |entry| {
+    while (try iter.next(b.graph.io)) |entry| {
         if (entry.kind != .file) continue;
         const file = entry.name;
         const ext = std.fs.path.extension(file);
